@@ -1,8 +1,8 @@
+use std::io::read_to_string;
+
 use anyhow::{Context, Result};
 use backend::Client;
 use clap::*;
-use serde_json::json;
-use tempdir::TempDir;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -16,6 +16,8 @@ struct Cli {
 enum Commands {
     /// Add a social media link to the archive
     Add { link: String },
+    /// Search the archive for description
+    Search {},
 }
 
 #[tokio::main]
@@ -32,36 +34,17 @@ async fn main() -> Result<()> {
 
     match args.command {
         Commands::Add { link } => {
-            let temp = TempDir::new("socialmediadownload")?;
-
-            // download the requested link
-            let outfile = client
-                .download
-                .download(&link, temp.path())
-                .await
-                .context("failed to download link")?;
-
-            let cid = client
-                .storage
-                .save_file(outfile)
-                .await
-                .context("failed to store downloaded file")?;
-
-            // ask for user description
             println!("Enter description for this post:");
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            input = input.trim().to_string();
+            let input = read_to_string(std::io::stdin())?;
 
-            // generate embeddings and store in vector db
-            let embeddings = client.embeddings.generate(&input).await?;
-            client
-                .vector
-                .insert_vector(
-                    embeddings,
-                    json!({"description": input, "original_link": link, "cid": cid.0}),
-                )
-                .await?;
+            client.add_link(&link, &input).await?;
+        }
+        Commands::Search {} => {
+            println!("Enter description to search by:");
+            let input = read_to_string(std::io::stdin())?;
+
+            let results = client.search(&input).await?;
+            println!("{results}");
         }
     }
 

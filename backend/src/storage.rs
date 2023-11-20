@@ -33,6 +33,7 @@ impl StorageClient {
         let filepath = filepath.as_ref();
         let downloaded_file = std::fs::File::open(filepath)
             .context("failed to open downloaded file to send to ipfs")?;
+
         let res = self
             .ipfs
             .add(downloaded_file)
@@ -43,7 +44,9 @@ impl StorageClient {
             .pin_add(&cid, true)
             .await
             .context("failed to pin content to ipfs")?;
-        if let Err(e) = self.ipfs
+
+        if let Err(e) = self
+            .ipfs
             .files_cp(
                 &format!("/ipfs/{cid}"),
                 &format!(

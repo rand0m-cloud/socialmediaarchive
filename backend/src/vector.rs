@@ -1,10 +1,15 @@
 use anyhow::{Context, Result};
 use qdrant_client::{
     prelude::*,
-    qdrant::{vectors_config::Config, VectorParams, VectorsConfig},
+    qdrant::{
+        point_id::PointIdOptions, vectors_config::Config, with_payload_selector::SelectorOptions,
+        RecommendPoints, VectorParams, VectorsConfig, WithPayloadSelector,
+    },
 };
-use serde_json::from_value;
+use serde_json::{from_value, to_value};
 use tracing::instrument;
+
+use crate::{Entry, SearchResult};
 
 pub struct VectorDbClient {
     client: QdrantClient,
@@ -68,5 +73,36 @@ impl VectorDbClient {
             .await
             .context("inserting vector into db failed")?;
         Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub async fn search(&mut self, embeddings: Vec<f32>) -> Result<SearchResult> {
+        let res = self
+            .client
+            .recommend(&RecommendPoints {
+                collection_name: "my_collection".to_string(),
+                limit: 100,
+                positive_vectors: vec![embeddings.into()],
+                with_payload: Some(WithPayloadSelector {
+                    selector_options: Some(SelectorOptions::Enable(true)),
+                }),
+                ..Default::default()
+            })
+            .await
+            .context("failed to search from qdrant")?;
+
+        Ok(SearchResult(
+            res.result
+                .into_iter()
+                .map(|x| Entry {
+                    id: match x.id.unwrap().point_id_options.unwrap() {
+                        PointIdOptions::Num(n) => n.to_string(),
+                        PointIdOptions::Uuid(n) => n,
+                    },
+                    score: x.score,
+                    payload: to_value(x.payload).unwrap(),
+                })
+                .collect(),
+        ))
     }
 }
