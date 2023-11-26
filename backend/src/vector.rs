@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use qdrant_client::{
     prelude::*,
@@ -9,20 +11,23 @@ use qdrant_client::{
 use serde_json::{from_value, to_value};
 use tracing::instrument;
 
-use crate::{Entry, SearchResult};
+use crate::client::*;
 
+#[derive(Clone)]
 pub struct VectorDbClient {
-    client: QdrantClient,
+    client: Arc<QdrantClient>,
 }
 
 impl VectorDbClient {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            client: QdrantClientConfig::from_url(
-                &std::env::var("QDRANT_URL").context("QDRANT_URL env variable not set")?,
-            )
-            .build()
-            .context("building QdrantClient failed")?,
+            client: Arc::new(
+                QdrantClientConfig::from_url(
+                    &std::env::var("QDRANT_URL").context("QDRANT_URL env variable not set")?,
+                )
+                .build()
+                .context("building QdrantClient failed")?,
+            ),
         })
     }
 
@@ -56,27 +61,24 @@ impl VectorDbClient {
 
     #[instrument(skip_all)]
     pub async fn insert_vector(
-        &mut self,
+        &self,
         vector: Vec<f32>,
         payload: serde_json::Value,
-    ) -> Result<()> {
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
         self.client
             .upsert_points(
                 "my_collection",
-                vec![PointStruct::new(
-                    uuid::Uuid::new_v4().to_string(),
-                    vector,
-                    from_value(payload)?,
-                )],
+                vec![PointStruct::new(id.clone(), vector, from_value(payload)?)],
                 None,
             )
             .await
             .context("inserting vector into db failed")?;
-        Ok(())
+        Ok(id)
     }
 
     #[instrument(skip_all)]
-    pub async fn search(&mut self, embeddings: Vec<f32>) -> Result<SearchResult> {
+    pub async fn search(&self, embeddings: Vec<f32>) -> Result<SearchResult> {
         let res = self
             .client
             .recommend(&RecommendPoints {
@@ -94,13 +96,15 @@ impl VectorDbClient {
         Ok(SearchResult(
             res.result
                 .into_iter()
-                .map(|x| Entry {
-                    id: match x.id.unwrap().point_id_options.unwrap() {
-                        PointIdOptions::Num(n) => n.to_string(),
-                        PointIdOptions::Uuid(n) => n,
-                    },
+                .map(|x| SearchEntry {
                     score: x.score,
-                    payload: to_value(x.payload).unwrap(),
+                    entry: Entry {
+                        id: match x.id.unwrap().point_id_options.unwrap() {
+                            PointIdOptions::Num(n) => n.to_string(),
+                            PointIdOptions::Uuid(n) => n,
+                        },
+                        payload: to_value(x.payload).unwrap(),
+                    },
                 })
                 .collect(),
         ))

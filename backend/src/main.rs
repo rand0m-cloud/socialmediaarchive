@@ -18,6 +18,8 @@ enum Commands {
     Add { link: String },
     /// Search the archive for description
     Search {},
+    /// Runs a daemon that provides a HTTP REST interface
+    Daemon {},
 }
 
 #[tokio::main]
@@ -30,7 +32,7 @@ async fn main() -> Result<()> {
 
     let args = Cli::parse();
 
-    let mut client = Client::new().await.context("failed to create client")?;
+    let client = Client::new().await.context("failed to create client")?;
 
     match args.command {
         Commands::Add { link } => {
@@ -45,6 +47,9 @@ async fn main() -> Result<()> {
 
             let results = client.search(&input).await?;
             println!("{results}");
+        }
+        Commands::Daemon {} => {
+            client.daemonize().await?;
         }
     }
 

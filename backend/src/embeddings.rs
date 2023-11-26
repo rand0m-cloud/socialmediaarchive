@@ -1,9 +1,9 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{ Context, Result, ensure};
 use reqwest::Client;
 use serde_json::{from_value, json, Value};
 use tracing::instrument;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EmbeddingClient {
     key: String,
     client: Client,
@@ -18,7 +18,7 @@ impl EmbeddingClient {
     }
 
     #[instrument(skip_all)]
-    pub async fn generate(&mut self, input: &str) -> Result<Vec<f32>> {
+    pub async fn generate(&self, input: &str) -> Result<Vec<f32>> {
         let mut resp: Value = self
             .client
             .post("https://api.openai.com/v1/embeddings")
@@ -33,9 +33,11 @@ impl EmbeddingClient {
             .json()
             .await?;
 
-        if resp.get("error").is_some() {
-            bail!("OpenAi embeddings request failed: {}", resp["error"]);
-        }
+        ensure!(
+            resp.get("error").is_none(),
+            "OpenAi embeddings request failed: {}",
+            resp["error"]
+        );
 
         Ok(from_value(resp["data"][0]["embedding"].take())?)
     }

@@ -4,6 +4,7 @@ use anyhow::*;
 use ipfs_api::{IpfsApi, IpfsClient, TryFromUri};
 use tracing::warn;
 
+#[derive(Clone)]
 pub struct StorageClient {
     ipfs: IpfsClient,
 }
@@ -29,7 +30,7 @@ impl StorageClient {
         Ok(())
     }
 
-    pub async fn save_file(&mut self, filepath: impl AsRef<Path>) -> Result<Cid> {
+    pub async fn save_file(&self, filepath: impl AsRef<Path>) -> Result<Cid> {
         let filepath = filepath.as_ref();
         let downloaded_file = std::fs::File::open(filepath)
             .context("failed to open downloaded file to send to ipfs")?;
