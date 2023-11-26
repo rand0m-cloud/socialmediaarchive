@@ -385,6 +385,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dotenv",
+ "futures",
  "ipfs-api",
  "qdrant-client",
  "reqwest",

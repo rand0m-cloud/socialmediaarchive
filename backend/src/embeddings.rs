@@ -1,4 +1,4 @@
-use anyhow::{ Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use reqwest::Client;
 use serde_json::{from_value, json, Value};
 use tracing::instrument;

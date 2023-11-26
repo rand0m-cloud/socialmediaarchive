@@ -7,6 +7,7 @@ use serde::Serialize;
 use serde_json::json;
 use tempdir::TempDir;
 
+/// A client that encapsulates all required components. Clones are referenced counted.
 #[non_exhaustive]
 #[derive(Clone)]
 pub struct Client {
@@ -40,6 +41,10 @@ impl Client {
         })
     }
 
+    /// Adds the requested link with description to the database.
+    ///
+    /// Downloads the file, stores the file, generates embeddings for the description,
+    /// submits to the vector database.
     pub async fn add_link(&self, link: &str, description: &str) -> Result<Entry> {
         let temp = TempDir::new("socialmediadownload")?;
 
@@ -67,6 +72,9 @@ impl Client {
         Ok(Entry { id, payload })
     }
 
+    /// Searches the vector database with the given description.
+    ///
+    /// Generates embeddings for the description and queries the vector database.
     pub async fn search(&self, description: &str) -> Result<SearchResult> {
         let embedding = self
             .embeddings
@@ -79,11 +87,13 @@ impl Client {
             .context("failed to search vector db")
     }
 
+    /// Runs the client as a daemon serving over REST
     pub async fn daemonize(self) -> Result<()> {
         Ok(daemon::run(self).await?)
     }
 }
 
+/// A collection of search entries.
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
 pub struct SearchResult(pub Vec<SearchEntry>);
@@ -94,6 +104,7 @@ impl std::fmt::Display for SearchResult {
     }
 }
 
+/// A search entry returned by the vector database.
 #[derive(Debug, Serialize)]
 pub struct SearchEntry {
     pub score: f32,
@@ -101,6 +112,7 @@ pub struct SearchEntry {
     pub entry: Entry,
 }
 
+/// A entry in the vector database.
 #[derive(Debug, Serialize)]
 pub struct Entry {
     pub id: String,
