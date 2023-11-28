@@ -9,7 +9,6 @@ use qdrant_client::{
     },
 };
 use serde_json::{from_value, to_value};
-use tracing::instrument;
 
 use crate::client::*;
 
@@ -31,7 +30,6 @@ impl VectorDbClient {
         })
     }
 
-    #[instrument(skip_all)]
     pub async fn init(&mut self) -> Result<()> {
         if self
             .client
@@ -59,7 +57,6 @@ impl VectorDbClient {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub async fn insert_vector(
         &self,
         vector: Vec<f32>,
@@ -77,7 +74,6 @@ impl VectorDbClient {
         Ok(id)
     }
 
-    #[instrument(skip_all)]
     pub async fn search(&self, embeddings: Vec<f32>) -> Result<SearchResult> {
         let res = self
             .client
