@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    io::Write,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc,
@@ -7,7 +8,7 @@ use std::{
 };
 
 use crate::client::*;
-use actix_web::{http::Method, web, *};
+use actix_web::{web, *};
 use anyhow::Result;
 use futures::{future::abortable, stream::AbortHandle, Future, FutureExt};
 use serde::{Deserialize, Serialize};
@@ -18,13 +19,14 @@ use tracing::error;
 /// Global incrementing counter for task IDs
 pub static TASK_ID: AtomicU32 = AtomicU32::new(0);
 
+/// The global data used in the daemon. Clones are referenced counted.
 #[derive(Clone)]
 pub struct Daemon {
     client: Client,
     tasks: Arc<Mutex<HashMap<u32, Task>>>,
 }
 
-/// An abortable task created from a future that results in a Value
+/// An abortable task created from a future that results in a json value
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum Task {
@@ -32,10 +34,10 @@ pub enum Task {
         #[serde(skip)]
         abort_handle: AbortHandle,
     },
+    Cancelled,
     Completed {
         data: Value,
     },
-    Cancelled,
 }
 
 impl Daemon {
@@ -93,9 +95,12 @@ impl Daemon {
     }
 }
 
+/// Starts a daemon from the given `Client`
 pub async fn run(client: Client) -> Result<()> {
     let daemon = Daemon::new(client);
     HttpServer::new(move || {
+        use endpoints::*;
+
         App::new()
             .service(
                 web::scope("/api/v0")
@@ -111,68 +116,119 @@ pub async fn run(client: Client) -> Result<()> {
     Ok(())
 }
 
-#[post("/search")]
-async fn search_endpoint(name: String, daemon: web::Data<Daemon>) -> impl Responder {
-    to_responder(daemon.get_ref().clone(), async move {
-        daemon.client.search(&name).await
-    })
-    .await
-}
-
-#[derive(Deserialize)]
-struct AddLink {
+/// The input data for the add link endpoint
+#[derive(Deserialize, Serialize, Clone)]
+pub struct AddLink {
     link: String,
     description: String,
 }
 
-#[post("/add")]
-async fn add_endpoint(input: web::Json<AddLink>, daemon: web::Data<Daemon>) -> impl Responder {
-    to_responder(daemon.get_ref().clone(), async move {
-        daemon
-            .client
-            .add_link(&input.link, &input.description)
-            .await
-    })
-    .await
-}
+/// The API endpoints
+pub mod endpoints {
+    use actix_web::{http::Method, web, *};
+    use serde_json::json;
 
-#[route("/task/{task_id}", method = "GET", method = "DELETE")]
-async fn task_endpoint(
-    task_id: web::Path<u32>,
-    method: Method,
-    daemon: web::Data<Daemon>,
-) -> impl Responder {
-    match method {
-        _ if method == Method::GET => match daemon.get_task(*task_id).await {
-            Some(t) => HttpResponse::Ok().json(t),
-            None => HttpResponse::BadRequest().json(json!({"error": "unknown task"})),
-        },
-        _ if method == Method::DELETE => {
-            daemon.cancel_task(*task_id).await;
-            HttpResponse::Ok().finish()
+    use super::{to_responder, AddLink};
+    use crate::daemon::Daemon;
+
+    #[post("/search")]
+    async fn search_endpoint(
+        name: String,
+        daemon: web::Data<Daemon>,
+        req: HttpRequest,
+    ) -> impl Responder {
+        to_responder(&daemon, req, name, |daemon, name| async move {
+            daemon.client.search(&name).await
+        })
+        .await
+    }
+
+    #[post("/add")]
+    async fn add_endpoint(
+        input: web::Json<AddLink>,
+        daemon: web::Data<Daemon>,
+        req: HttpRequest,
+    ) -> impl Responder {
+        to_responder(
+            &daemon,
+            req,
+            input.into_inner(),
+            |daemon, input| async move {
+                daemon
+                    .client
+                    .add_link(&input.link, &input.description)
+                    .await
+            },
+        )
+        .await
+    }
+
+    #[route("/task/{task_id}", method = "GET", method = "DELETE")]
+    async fn task_endpoint(
+        task_id: web::Path<u32>,
+        method: Method,
+        daemon: web::Data<Daemon>,
+    ) -> impl Responder {
+        match method {
+            _ if method == Method::GET => match daemon.get_task(*task_id).await {
+                Some(t) => HttpResponse::Ok().json(t),
+                None => HttpResponse::BadRequest().json(json!({"error": "unknown task"})),
+            },
+            _ if method == Method::DELETE => {
+                daemon.cancel_task(*task_id).await;
+                HttpResponse::Ok().finish()
+            }
+            _ => HttpResponse::BadRequest().finish(),
         }
-        _ => HttpResponse::BadRequest().finish(),
     }
 }
 
 /// Transforms a future into a task and responds with a 202 Accepted that contains
-/// a Location header for the query endpoint. Maps the future's result into the
+/// a Location header for the query task endpoint. Maps the future's result into the
 /// data or a serialized error.
-async fn to_responder<T: Serialize, F: Future<Output = Result<T>> + 'static>(
-    daemon: Daemon,
+///
+/// If the task fails, the input data is saved in a ndjson file `failed_tasks.ndjson` for possible retries.
+async fn to_responder<
+    In: Serialize + Clone + 'static,
+    Out: Serialize,
+    F: FnOnce(Daemon, In) -> Fut,
+    Fut: Future<Output = Result<Out>> + 'static,
+>(
+    daemon: &Daemon,
+    req: HttpRequest,
+    input: In,
     res: F,
 ) -> impl Responder {
     let task_id = daemon
-        .new_task(res.map(|res| match res {
-            Ok(t) => to_value(t).unwrap(),
-            Err(e) => {
-                error!("daemon error: {e}");
-                json!({
-                    "error": e.to_string(),
-                    "backtrace": e.chain().map(|err| err.to_string()).collect::<Vec<_>>()
-                })
-            }
-        }))
+        .new_task(
+            res(daemon.clone(), input.clone()).map(move |res| match res {
+                Ok(t) => to_value(t).unwrap(),
+                Err(e) => {
+                    error!("daemon error: {e}");
+                    let err = json!({
+                        "error": e.to_string(),
+                        "backtrace": e.chain().map(|err| err.to_string()).collect::<Vec<_>>(),
+                        "input": to_value(input).unwrap(),
+                        "path": req.path()
+                    });
+
+                    // save the failed task for possible replay
+                    let mut failed_tasks_file = std::fs::File::options()
+                        .append(true)
+                        .create(true)
+                        .open("failed_tasks.ndjson")
+                        .unwrap();
+                    writeln!(
+                        &mut failed_tasks_file,
+                        "{}",
+                        serde_json::to_string(&err).unwrap()
+                    )
+                    .unwrap();
+
+                    err
+                }
+            }),
+        )
         .await;
 
     HttpResponse::Accepted()

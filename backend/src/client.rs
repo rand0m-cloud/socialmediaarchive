@@ -7,7 +7,8 @@ use serde::Serialize;
 use serde_json::json;
 use tempdir::TempDir;
 
-/// A client that encapsulates all required components. Clones are referenced counted.
+/// A top-level client that encapsulates all required components and provides the logical operations.
+/// Clones are referenced counted.
 #[non_exhaustive]
 #[derive(Clone)]
 pub struct Client {

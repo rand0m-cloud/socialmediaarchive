@@ -1,2 +1,3 @@
 /target
 .env
+failed_tasks.ndjson
