@@ -3,6 +3,7 @@ use std::io::read_to_string;
 use anyhow::{Context, Result};
 use backend::Client;
 use clap::*;
+use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -24,11 +25,13 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenv::dotenv().context("missing .env file")?;
-
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
+
+    if dotenv::dotenv().is_err() {
+        warn!("didn't load a .env file")
+    }
 
     let args = Cli::parse();
 

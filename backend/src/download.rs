@@ -26,7 +26,8 @@ impl DownloadClient {
             .stderr(Stdio::inherit())
             .stdout(Stdio::inherit())
             .current_dir(dir)
-            .output()?
+            .output()
+            .context("failed to run yt-dlp command")?
             .status;
 
         ensure!(exit.success(), "yt-dlp command failed with {exit}");
