@@ -13,8 +13,9 @@ resource "docker_image" "backend" {
 }
 
 resource "docker_container" "backend" {
-  name  = "archiver_backend"
-  image = docker_image.backend.image_id
+  name       = "archiver_backend"
+  image      = docker_image.backend.image_id
+  depends_on = [docker_container.qdrant, docker_container.ipfs]
 
   networks_advanced {
     name = docker_network.archiver.name
