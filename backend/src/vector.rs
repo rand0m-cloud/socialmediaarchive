@@ -10,7 +10,7 @@ use qdrant_client::{
 };
 use serde_json::{from_value, to_value};
 
-use crate::client::*;
+use crate::api::*;
 
 #[derive(Clone)]
 pub struct VectorDbClient {

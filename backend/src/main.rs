@@ -1,7 +1,7 @@
 use std::io::read_to_string;
 
 use anyhow::{Context, Result};
-use backend::Client;
+use backend::{api::*, client::RemoteClient, LocalClient};
 use clap::*;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
@@ -35,7 +35,15 @@ async fn main() -> Result<()> {
 
     let args = Cli::parse();
 
-    let client = Client::new().await.context("failed to create client")?;
+    let client: Box<dyn ClientApi> = if let Ok(url) = std::env::var("API_URL") {
+        Box::new(RemoteClient::new(&url))
+    } else {
+        Box::new(
+            LocalClient::new()
+                .await
+                .context("failed to create client")?,
+        )
+    };
 
     match args.command {
         Commands::Add { link } => {
@@ -52,7 +60,11 @@ async fn main() -> Result<()> {
             println!("{results}");
         }
         Commands::Daemon {} => {
-            client.daemonize().await?;
+            LocalClient::new()
+                .await
+                .context("failed to create local client")?
+                .daemonize()
+                .await?;
         }
     }
 

@@ -1,3 +1,5 @@
+/// Core client interface
+pub mod api;
 /// Top-level client for logical operations
 pub mod client;
 /// REST interface to client
@@ -11,4 +13,5 @@ pub mod storage;
 /// Vector database client
 pub mod vector;
 
-pub use client::Client;
+pub use api::ClientApi;
+pub use client::{LocalClient, RemoteClient};

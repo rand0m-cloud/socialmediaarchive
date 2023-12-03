@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use crate::client::*;
+use crate::LocalClient;
 use actix_web::{web, *};
 use anyhow::Result;
 use futures::{future::abortable, stream::AbortHandle, Future, FutureExt};
@@ -22,17 +22,17 @@ pub static TASK_ID: AtomicU32 = AtomicU32::new(0);
 /// The global data used in the daemon. Clones are referenced counted.
 #[derive(Clone)]
 pub struct Daemon {
-    client: Client,
+    client: LocalClient,
     tasks: Arc<Mutex<HashMap<u32, Task>>>,
 }
 
 /// An abortable task created from a future that results in a json value
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Task {
     InProgress {
         #[serde(skip)]
-        abort_handle: AbortHandle,
+        abort_handle: Option<AbortHandle>,
     },
     Cancelled,
     Completed {
@@ -41,7 +41,7 @@ pub enum Task {
 }
 
 impl Daemon {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: LocalClient) -> Self {
         Self {
             client,
             tasks: Default::default(),
@@ -58,10 +58,12 @@ impl Daemon {
 
         tokio::task::spawn_local(fut);
 
-        self.tasks
-            .lock()
-            .await
-            .insert(id, Task::InProgress { abort_handle });
+        self.tasks.lock().await.insert(
+            id,
+            Task::InProgress {
+                abort_handle: Some(abort_handle),
+            },
+        );
 
         id
     }
@@ -83,7 +85,7 @@ impl Daemon {
     pub async fn cancel_task(&self, id: u32) {
         if let Some(t) = self.tasks.lock().await.get_mut(&id) {
             if let Task::InProgress { abort_handle } = t {
-                abort_handle.abort();
+                abort_handle.as_ref().unwrap().abort();
                 *t = Task::Cancelled;
             }
         }
@@ -96,7 +98,7 @@ impl Daemon {
 }
 
 /// Starts a daemon from the given `Client`
-pub async fn run(client: Client) -> Result<()> {
+pub async fn run(client: LocalClient) -> Result<()> {
     let daemon = Daemon::new(client);
     HttpServer::new(move || {
         use endpoints::*;
@@ -119,8 +121,8 @@ pub async fn run(client: Client) -> Result<()> {
 /// The input data for the add link endpoint
 #[derive(Deserialize, Serialize, Clone)]
 pub struct AddLink {
-    link: String,
-    description: String,
+    pub link: String,
+    pub description: String,
 }
 
 /// The API endpoints
@@ -129,7 +131,7 @@ pub mod endpoints {
     use serde_json::json;
 
     use super::{to_responder, AddLink};
-    use crate::daemon::Daemon;
+    use crate::{api::ClientApi, daemon::Daemon};
 
     #[post("/search")]
     async fn search_endpoint(

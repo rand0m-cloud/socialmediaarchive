@@ -1,24 +1,31 @@
+use std::{sync::Arc, time::Duration};
+
 use crate::{
-    daemon, download::DownloadClient, embeddings::EmbeddingClient, storage::StorageClient,
+    api::*,
+    daemon::{self, AddLink, Task},
+    download::DownloadClient,
+    embeddings::EmbeddingClient,
+    storage::StorageClient,
     vector::VectorDbClient,
 };
 use anyhow::*;
-use serde::Serialize;
-use serde_json::json;
+use async_trait::async_trait;
+use serde::de::DeserializeOwned;
+use serde_json::{from_value, json};
 use tempdir::TempDir;
 
 /// A top-level client that encapsulates all required components and provides the logical operations.
 /// Clones are referenced counted.
 #[non_exhaustive]
 #[derive(Clone)]
-pub struct Client {
+pub struct LocalClient {
     pub embeddings: EmbeddingClient,
     pub vector: VectorDbClient,
     pub storage: StorageClient,
     pub download: DownloadClient,
 }
 
-impl Client {
+impl LocalClient {
     pub async fn new() -> Result<Self> {
         let embeddings = EmbeddingClient::new().context("failed to create embeddings client")?;
         let mut vector = VectorDbClient::new().context("failed to create vectordb client")?;
@@ -42,11 +49,15 @@ impl Client {
         })
     }
 
-    /// Adds the requested link with description to the database.
-    ///
-    /// Downloads the file, stores the file, generates embeddings for the description,
-    /// submits to the vector database.
-    pub async fn add_link(&self, link: &str, description: &str) -> Result<Entry> {
+    /// Runs the client as a daemon serving over REST
+    pub async fn daemonize(self) -> Result<()> {
+        Ok(daemon::run(self).await?)
+    }
+}
+
+#[async_trait(?Send)]
+impl ClientApi for LocalClient {
+    async fn add_link(&self, link: &str, description: &str) -> Result<Entry> {
         let temp = TempDir::new("socialmediadownload")?;
 
         // download the requested link
@@ -69,14 +80,10 @@ impl Client {
             .vector
             .insert_vector(embeddings, payload.clone())
             .await?;
-
         Ok(Entry { id, payload })
     }
 
-    /// Searches the vector database with the given description.
-    ///
-    /// Generates embeddings for the description and queries the vector database.
-    pub async fn search(&self, description: &str) -> Result<SearchResult> {
+    async fn search(&self, description: &str) -> Result<SearchResult> {
         let embedding = self
             .embeddings
             .generate(description.trim())
@@ -87,35 +94,69 @@ impl Client {
             .await
             .context("failed to search vector db")
     }
+}
 
-    /// Runs the client as a daemon serving over REST
-    pub async fn daemonize(self) -> Result<()> {
-        Ok(daemon::run(self).await?)
+/// Similiar to a LocalClient but for daemons that are remote.
+/// Clones are referenced counted.
+#[derive(Clone)]
+pub struct RemoteClient {
+    web_client: reqwest::Client,
+    url: Arc<str>,
+}
+
+impl RemoteClient {
+    pub fn new(url: &str) -> Self {
+        Self {
+            web_client: reqwest::Client::new(),
+            url: Arc::from(url),
+        }
+    }
+
+    /// Waits for the given task to complete and deserializes the result
+    async fn wait_for_task<T: DeserializeOwned>(&self, task: &str) -> Result<T> {
+        loop {
+            let resp = self
+                .web_client
+                .get(format!("{}{task}", self.url))
+                .send()
+                .await
+                .with_context(|| format!("failed to use API endpoint {task}"))?;
+            let task: Task = resp.json().await?;
+            match task {
+                Task::Cancelled => bail!("task was cancelled"),
+                Task::InProgress { .. } => tokio::time::sleep(Duration::from_secs(1)).await,
+                Task::Completed { data } => return Ok(from_value(data)?),
+            }
+        }
     }
 }
 
-/// A collection of search entries.
-#[derive(Debug, Serialize)]
-#[serde(transparent)]
-pub struct SearchResult(pub Vec<SearchEntry>);
-
-impl std::fmt::Display for SearchResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&serde_json::to_string_pretty(&self.0).unwrap())
+#[async_trait(?Send)]
+impl ClientApi for RemoteClient {
+    async fn add_link(&self, link: &str, description: &str) -> Result<Entry> {
+        let resp = self
+            .web_client
+            .post(format!("{}/api/v0/add", self.url))
+            .json(&AddLink {
+                link: link.to_string(),
+                description: description.to_string(),
+            })
+            .send()
+            .await
+            .context("failed to use API endpoint /add")?;
+        let task = resp.headers().get("location").unwrap().to_str()?;
+        self.wait_for_task(task).await
     }
-}
 
-/// A search entry returned by the vector database.
-#[derive(Debug, Serialize)]
-pub struct SearchEntry {
-    pub score: f32,
-    #[serde(flatten)]
-    pub entry: Entry,
-}
-
-/// A entry in the vector database.
-#[derive(Debug, Serialize)]
-pub struct Entry {
-    pub id: String,
-    pub payload: serde_json::Value,
+    async fn search(&self, description: &str) -> Result<SearchResult> {
+        let resp = self
+            .web_client
+            .post(format!("{}/api/v0/search", self.url))
+            .body(description.to_string())
+            .send()
+            .await
+            .context("failed to use API endpoint /search")?;
+        let task = resp.headers().get("location").unwrap().to_str()?;
+        self.wait_for_task(task).await
+    }
 }

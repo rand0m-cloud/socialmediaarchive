@@ -9,6 +9,7 @@ edition = "2021"
 [dependencies]
 actix-web = "4.4.0"
 anyhow = "1.0.75"
+async-trait = "0.1.74"
 clap = {version = "4.4.8", features = ["derive"]}
 dotenv = "0.15.0"
 futures = "0.3.29"
